@@ -258,9 +258,14 @@ void UpdateTooltip(int idx) {
     }
 }
 
-int HitTest(int clientX) {
+int HitTestScreen() {
+    if (!g_wnd) return -1;
+    POINT pt{};
+    RECT w{};
+    if (!GetCursorPos(&pt) || !GetWindowRect(g_wnd, &w)) return -1;
+    int x = pt.x - w.left;
     for (int i = 0; i < 3; i++) {
-        if (clientX >= g_slotRects[i].left && clientX < g_slotRects[i].right) return i;
+        if (x >= g_slotRects[i].left && x < g_slotRects[i].right) return i;
     }
     return -1;
 }
@@ -331,8 +336,7 @@ void Paint() {
 LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_MOUSEMOVE: {
-            int x = GET_X_LPARAM(lp);
-            int idx = HitTest(x);
+            int idx = HitTestScreen();
             if (g_hoverIdx != idx) {
                 g_hoverIdx = idx;
                 TRACKMOUSEEVENT t{ sizeof(t), TME_LEAVE, h, 0 };
@@ -351,9 +355,7 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             widget::Reposition();
             return 0;
         case WM_MOUSEWHEEL: {
-            POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
-            ScreenToClient(h, &pt);
-            int idx = HitTest(pt.x);
+            int idx = HitTestScreen();
             if (idx < 0) idx = g_hoverIdx;
             if (idx >= 0 && idx < 3) {
                 g_wheelAccum += GET_WHEEL_DELTA_WPARAM(wp);
@@ -370,7 +372,7 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_LBUTTONUP: {
             if (g_tip) SendMessageW(g_tip, TTM_POP, 0, 0);
-            int idx = HitTest(GET_X_LPARAM(lp));
+            int idx = HitTestScreen();
             if (idx >= 0 && idx < 3) {
                 PostMessageW(g_notify, g_clickMsg, 0, static_cast<LPARAM>(idx));
             }
@@ -416,6 +418,10 @@ bool Create(HINSTANCE inst, HWND notifyWnd, UINT clickMsg, bool lightTheme) {
     g_wnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_NOINHERITLAYOUT, kClass, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1,
                             g_taskbar, nullptr, inst, nullptr);
     if (!g_wnd) { g_taskbar = nullptr; return false; }
+    LONG_PTR ex = GetWindowLongPtrW(g_wnd, GWL_EXSTYLE);
+    if (ex & WS_EX_LAYOUTRTL) {
+        SetWindowLongPtrW(g_wnd, GWL_EXSTYLE, ex & ~WS_EX_LAYOUTRTL);
+    }
 
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_WIN95_CLASSES };
     InitCommonControlsEx(&icc);
