@@ -2,6 +2,12 @@
 
 A lightweight, native Win32 C++ taskbar widget for Windows 10 & Windows 11 providing instant mouse-wheel and click-slider control over **Volume**, **Brightness** (including negative software dimming), and **Eye Warmth (Blue-Light Filter)**.
 
+## Screenshots
+
+| Taskbar Icons | Floating Slider | Right-Click Menu |
+| :---: | :---: | :---: |
+| ![Taskbar Icons](docs/taskbar.png) | ![Floating Slider](docs/slider.png) | ![Menu](docs/menu.png) |
+
 ## Features
 
 - **3 Compact Taskbar Icons**:
