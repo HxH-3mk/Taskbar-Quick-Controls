@@ -39,3 +39,9 @@ build.bat
 ```
 
 This produces a standalone `QuickControls.exe`.
+
+## Support
+
+If you find this project useful, you can support its development:
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-hxh3mk-FFDD00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/hxh3mk)
