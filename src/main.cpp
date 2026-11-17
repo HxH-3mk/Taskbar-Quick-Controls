@@ -208,7 +208,7 @@ void ShowSliderPopup(int idx, RECT slotRect) {
 
     auto* st = new SliderPopupState();
     st->kind = static_cast<ControlKind>(idx);
-    st->light = g_lightApps;
+    st->light = g_lightTaskbar;
     st->bgBrush = CreateSolidBrush(st->light ? RGB(245, 245, 245) : RGB(36, 36, 36));
     st->font = CreateFontW(-s(14), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
