@@ -334,10 +334,10 @@ namespace controls {
 
 AppLang LoadLanguage() {
     int v = 0;
-    if (ReadRegDword(L"Language", v) && v == static_cast<int>(AppLang::Arabic)) {
-        return AppLang::Arabic;
+    if (ReadRegDword(L"Language", v)) {
+        return (v == static_cast<int>(AppLang::Arabic)) ? AppLang::Arabic : AppLang::English;
     }
-    return AppLang::English;
+    return (PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_ARABIC) ? AppLang::Arabic : AppLang::English;
 }
 
 void SaveLanguage(AppLang lang) {
