@@ -61,6 +61,8 @@ var
 begin
   if FileExists(ExpandConstant('{app}\QuickControls.exe')) then
     Exec(ExpandConstant('{app}\QuickControls.exe'), '--quit', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Exec('taskkill.exe', '/F /IM QuickControls.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Sleep(300);
 end;
 
 function InstalledRunValue(): String;
@@ -136,6 +138,8 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
+  if CurUninstallStep = usUninstall then
+    QuitRunningApp();
   if CurUninstallStep = usPostUninstall then
   begin
     RemoveOwnAutostart();
