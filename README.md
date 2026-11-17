@@ -27,7 +27,7 @@ A lightweight, native Win32 C++ taskbar widget for Windows 10 & Windows 11 provi
 
 ## Usage
 
-1. Download `QuickControls.exe` from [Releases](../../releases) and run it.
+1. Download **`QuickControls-Setup-1.0.0.exe`** (recommended installer — adds Start Menu shortcut & uninstaller) or the portable `QuickControls.exe` from [Releases](../../releases) and run it.
 2. **Hover** over an icon to see its current percentage, **scroll** with the mouse wheel to adjust, or **left-click** to open the slider popup.
 3. **Right-click** for options:
    - Reset Eye Warmth (`0%`)
