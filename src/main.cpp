@@ -7,19 +7,24 @@
 #include <string>
 
 #include "controls.h"
+#include "updater.h"
 #include "widget.h"
 
 namespace {
 
 constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
+constexpr UINT WM_UPDATE_RESULT = WM_APP + 4;
 constexpr UINT_PTR TIMER_REPOSITION = 1;
+constexpr UINT_PTR TIMER_UPDATE_CHECK = 2;
 
 enum MenuId : UINT {
+    ID_UPDATE_NOW = 90,
     ID_RESET_WARMTH = 100,
     ID_LANG_EN,
     ID_LANG_AR,
     ID_WIDGET_BACKGROUND,
     ID_AUTOSTART,
+    ID_CHECK_UPDATES,
     ID_EXIT
 };
 
@@ -38,6 +43,7 @@ bool g_lightTaskbar = false;
 bool g_lightApps = false;
 bool g_widgetBackground = false;
 AppLang g_lang = AppLang::English;
+updater::UpdateInfo g_updateInfo;
 
 bool ReadPersonalizeBool(const wchar_t* valueName, bool defaultVal) {
     DWORD v = defaultVal ? 1 : 0, sz = sizeof(v);
@@ -281,6 +287,14 @@ void ShowMenu() {
     HMENU m = CreatePopupMenu();
     if (!m) return;
 
+    if (g_updateInfo.available) {
+        std::wstring updTxt = ar
+            ? (L"تحديث جديد متاح (" + g_updateInfo.version + L") - تحميل...")
+            : (L"Update available (" + g_updateInfo.version + L") - Download...");
+        AppendMenuW(m, MF_STRING, ID_UPDATE_NOW, updTxt.c_str());
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    }
+
     AppendMenuW(m, MF_STRING, ID_RESET_WARMTH, ar ? L"إعادة ضبط صفار الشاشة (0%)" : L"Reset Eye Warmth (0%)");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
 
@@ -293,6 +307,7 @@ void ShowMenu() {
                 ar ? L"خلفية خلف النص (للشريط الشفاف)" : L"Background behind taskbar icons");
     AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_AUTOSTART,
                 ar ? L"التشغيل مع ويندوز" : L"Start with Windows");
+    AppendMenuW(m, MF_STRING, ID_CHECK_UPDATES, ar ? L"التحقق من التحديثات..." : L"Check for updates...");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_EXIT, ar ? L"خروج" : L"Exit");
 
@@ -304,6 +319,15 @@ void ShowMenu() {
     DestroyMenu(m);
 
     switch (cmd) {
+        case ID_UPDATE_NOW:
+            if (!g_updateInfo.url.empty()) {
+                ShellExecuteW(nullptr, L"open", g_updateInfo.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            break;
+        case ID_CHECK_UPDATES:
+            updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
+                                kSettingsKey, 1, 0, 0, 3, true);
+            break;
         case ID_RESET_WARMTH:
             controls::SetValue(ControlKind::Warmth, 0);
             widget::Refresh();
@@ -347,8 +371,32 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 ShowSliderPopup(idx, widget::SlotScreenRect(idx));
             }
             return 0;
+        case WM_UPDATE_RESULT:
+            if (wp == 1) {
+                g_updateInfo = updater::LatestResult();
+                widget::SetUpdateAvailable(g_updateInfo.version);
+                if (lp == 1 && !g_updateInfo.url.empty()) {
+                    bool ar = (g_lang == AppLang::Arabic);
+                    std::wstring msgText = ar
+                        ? (L"يتوفر إصدار جديد (" + g_updateInfo.version + L") على GitHub.\nهل تريد فتح صفحة التحميل؟")
+                        : (L"A new version (" + g_updateInfo.version + L") is available on GitHub.\nOpen download page?");
+                    if (MessageBoxW(nullptr, msgText.c_str(), L"Taskbar Quick Controls",
+                                    MB_YESNO | MB_ICONINFORMATION | (ar ? (MB_RTLREADING | MB_RIGHT) : 0)) == IDYES) {
+                        ShellExecuteW(nullptr, L"open", g_updateInfo.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    }
+                }
+            } else if (lp == 1) {
+                bool ar = (g_lang == AppLang::Arabic);
+                MessageBoxW(nullptr, ar ? L"أنت تستخدم أحدث إصدار." : L"You are using the latest version.",
+                            L"Taskbar Quick Controls", MB_OK | MB_ICONINFORMATION | (ar ? (MB_RTLREADING | MB_RIGHT) : 0));
+            }
+            return 0;
         case WM_TIMER:
             if (wp == TIMER_REPOSITION) EnsureWidget();
+            else if (wp == TIMER_UPDATE_CHECK) {
+                updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
+                                    kSettingsKey, 1, 0, 0, 3, false);
+            }
             return 0;
         case WM_DISPLAYCHANGE:
             controls::ReapplyDisplaySettings();
@@ -437,6 +485,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
 
     EnsureWidget();
     SetTimer(g_hwnd, TIMER_REPOSITION, 1000, nullptr);
+    SetTimer(g_hwnd, TIMER_UPDATE_CHECK, 24 * 60 * 60 * 1000, nullptr);
+    updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
+                        kSettingsKey, 1, 0, 0, 3, false);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {

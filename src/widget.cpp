@@ -14,6 +14,8 @@ namespace {
 HWND g_wnd, g_taskbar, g_tip, g_notify, g_rebar;
 UINT g_clickMsg;
 bool g_light, g_background;
+bool g_updateDot = false;
+std::wstring g_updateVer;
 AppLang g_lang = AppLang::English;
 int g_hoverIdx = -1;  // -1 = none, 0 = Volume, 1 = Brightness, 2 = Warmth
 int g_wheelAccum = 0;
@@ -242,7 +244,11 @@ std::wstring BuildTooltipForIndex(int idx) {
         : ((idx == 0) ? L"Volume" : (idx == 1) ? L"Brightness" : L"Eye Warmth");
     wchar_t buf[64]{};
     swprintf_s(buf, ar ? L"%s: \u200E%d%%" : L"%s: %d%%", name, val);
-    return buf;
+    std::wstring out = buf;
+    if (g_updateDot && !g_updateVer.empty()) {
+        out += ar ? (L"\nيتوفر تحديث: " + g_updateVer) : (L"\nUpdate available: " + g_updateVer);
+    }
+    return out;
 }
 
 void UpdateTooltip(int idx) {
@@ -312,6 +318,16 @@ void Paint() {
     }
 
     DeleteObject(icons);
+
+    if (g_updateDot) {
+        int r = std::max(2, Px(3));
+        int cx = W - Px(5);
+        int cy = Px(7);
+        Rgb dotCol{ 34, 197, 94 };
+        for (int dy = -r; dy <= r; dy++)
+            for (int dx = -r; dx <= r; dx++)
+                if (dx * dx + dy * dy <= r * r) cv.Blend(cx + dx, cy + dy, dotCol, 240);
+    }
 
     HDC screen = GetDC(nullptr);
     HDC mem = CreateCompatibleDC(screen);
@@ -488,6 +504,13 @@ RECT SlotScreenRect(int idx) {
 void SetLightTheme(bool light) {
     g_light = light;
     ApplyTipTheme();
+    Paint();
+}
+
+void SetUpdateAvailable(const std::wstring& version) {
+    g_updateDot = !version.empty();
+    g_updateVer = version;
+    UpdateTooltip(g_hoverIdx);
     Paint();
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <string>
 #include "controls.h"
 
 namespace widget {
@@ -10,6 +11,7 @@ bool Alive();
 void Refresh();
 void SetLanguage(AppLang lang);
 void SetLightTheme(bool light);
+void SetUpdateAvailable(const std::wstring& version);
 void SetBackground(bool on);
 bool Reposition();
 RECT SlotScreenRect(int idx);
