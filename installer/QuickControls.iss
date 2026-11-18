@@ -3,7 +3,7 @@
 ; Setup also offers "Install for all users" (Program Files, needs administrator rights).
 
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 #define Root ".."
 #ifndef ExePath

@@ -326,7 +326,7 @@ void ShowMenu() {
             break;
         case ID_CHECK_UPDATES:
             updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                                kSettingsKey, 1, 0, 0, 3, true);
+                                kSettingsKey, 1, 1, 0, 3, true);
             break;
         case ID_RESET_WARMTH:
             controls::SetValue(ControlKind::Warmth, 0);
@@ -368,7 +368,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 ShowMenu();
             } else if (wp == 0) {
                 int idx = static_cast<int>(lp);
-                ShowSliderPopup(idx, widget::SlotScreenRect(idx));
+                ShowSliderPopup(idx, widget::SlotScreenRect(widget::LastClickedWnd(), idx));
             }
             return 0;
         case WM_UPDATE_RESULT:
@@ -395,7 +395,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == TIMER_REPOSITION) EnsureWidget();
             else if (wp == TIMER_UPDATE_CHECK) {
                 updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                                    kSettingsKey, 1, 0, 0, 3, false);
+                                    kSettingsKey, 1, 1, 0, 3, false);
             }
             return 0;
         case WM_DISPLAYCHANGE:
@@ -487,7 +487,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     SetTimer(g_hwnd, TIMER_REPOSITION, 1000, nullptr);
     SetTimer(g_hwnd, TIMER_UPDATE_CHECK, 24 * 60 * 60 * 1000, nullptr);
     updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                        kSettingsKey, 1, 0, 0, 3, false);
+                        kSettingsKey, 1, 1, 0, 3, false);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
