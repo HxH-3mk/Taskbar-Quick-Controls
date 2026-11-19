@@ -15,6 +15,7 @@ void SetUpdateAvailable(const std::wstring& version);
 void SetBackground(bool on);
 bool Reposition();
 HWND LastClickedWnd();
-RECT SlotScreenRect(HWND widgetWnd, int idx);
+RECT SlotScreenRect(HWND widgetWnd, int slotIdx);
+void ResolveSlot(int slotIdx, ControlKind& outKind, int& outMonIdx);
 
 }  // namespace widget

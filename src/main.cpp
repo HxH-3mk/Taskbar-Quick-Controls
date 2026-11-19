@@ -20,6 +20,7 @@ constexpr UINT_PTR TIMER_UPDATE_CHECK = 2;
 enum MenuId : UINT {
     ID_UPDATE_NOW = 90,
     ID_RESET_WARMTH = 100,
+    ID_PER_MONITOR_BRIGHTNESS,
     ID_LANG_EN,
     ID_LANG_AR,
     ID_WIDGET_BACKGROUND,
@@ -106,6 +107,7 @@ void SetAutostart(bool on) {
 
 struct SliderPopupState {
     ControlKind kind = ControlKind::Volume;
+    int monIdx = -1;
     HWND label = nullptr;
     HWND slider = nullptr;
     HFONT font = nullptr;
@@ -113,13 +115,21 @@ struct SliderPopupState {
     bool light = false;
 };
 
-std::wstring SliderLabelText(ControlKind kind, int val) {
+std::wstring SliderLabelText(ControlKind kind, int monIdx, int val) {
     bool ar = (g_lang == AppLang::Arabic);
-    const wchar_t* name = ar
-        ? ((kind == ControlKind::Volume) ? L"الصوت" : (kind == ControlKind::Brightness) ? L"السطوع" : L"صفار الشاشة")
-        : ((kind == ControlKind::Volume) ? L"Volume" : (kind == ControlKind::Brightness) ? L"Brightness" : L"Eye Warmth");
-    wchar_t buf[64]{};
-    swprintf_s(buf, ar ? L"%s: \u200E%d%%" : L"%s: %d%%", name, val);
+    std::wstring name;
+    if (kind == ControlKind::Volume) {
+        name = ar ? L"الصوت" : L"Volume";
+    } else if (kind == ControlKind::Warmth) {
+        name = ar ? L"صفار الشاشة" : L"Eye Warmth";
+    } else {
+        name = ar ? L"السطوع" : L"Brightness";
+        if (controls::IsPerMonitorBrightness() && monIdx >= 0) {
+            name += L" (" + controls::MonitorLabel(monIdx, g_lang) + L")";
+        }
+    }
+    wchar_t buf[96]{};
+    swprintf_s(buf, ar ? L"%s: \u200E%d%%" : L"%s: %d%%", name.c_str(), val);
     return buf;
 }
 
@@ -145,8 +155,8 @@ LRESULT CALLBACK SliderPopupProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_HSCROLL:
             if (st && reinterpret_cast<HWND>(lp) == st->slider) {
                 int pos = static_cast<int>(SendMessageW(st->slider, TBM_GETPOS, 0, 0));
-                controls::SetValue(st->kind, pos);
-                SetWindowTextW(st->label, SliderLabelText(st->kind, pos).c_str());
+                controls::SetValue(st->kind, pos, st->monIdx);
+                SetWindowTextW(st->label, SliderLabelText(st->kind, st->monIdx, pos).c_str());
                 widget::Refresh();
                 return 0;
             }
@@ -155,10 +165,10 @@ LRESULT CALLBACK SliderPopupProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (st) {
                 int delta = GET_WHEEL_DELTA_WPARAM(wp);
                 int step = (delta > 0) ? 5 : -5;
-                controls::Adjust(st->kind, step);
-                int val = controls::GetValue(st->kind);
+                controls::Adjust(st->kind, step, st->monIdx);
+                int val = controls::GetValue(st->kind, st->monIdx);
                 SendMessageW(st->slider, TBM_SETPOS, TRUE, val);
-                SetWindowTextW(st->label, SliderLabelText(st->kind, val).c_str());
+                SetWindowTextW(st->label, SliderLabelText(st->kind, st->monIdx, val).c_str());
                 widget::Refresh();
                 return 0;
             }
@@ -192,12 +202,16 @@ LRESULT CALLBACK SliderPopupProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-void ShowSliderPopup(int idx, RECT slotRect) {
+void ShowSliderPopup(int slotIdx, RECT slotRect) {
     if (g_popup && IsWindow(g_popup)) {
         DestroyWindow(g_popup);
         g_popup = nullptr;
     }
-    if (idx < 0 || idx >= 3) return;
+    if (slotIdx < 0) return;
+
+    ControlKind kind = ControlKind::Volume;
+    int monIdx = -1;
+    widget::ResolveSlot(slotIdx, kind, monIdx);
 
     static bool reg = false;
     if (!reg) {
@@ -213,7 +227,8 @@ void ShowSliderPopup(int idx, RECT slotRect) {
     auto s = [&](int v) { return MulDiv(v, static_cast<int>(dpi ? dpi : 96), 96); };
 
     auto* st = new SliderPopupState();
-    st->kind = static_cast<ControlKind>(idx);
+    st->kind = kind;
+    st->monIdx = monIdx;
     st->light = g_lightTaskbar;
     st->bgBrush = CreateSolidBrush(st->light ? RGB(245, 245, 245) : RGB(36, 36, 36));
     st->font = CreateFontW(-s(14), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
@@ -250,8 +265,8 @@ void ShowSliderPopup(int idx, RECT slotRect) {
     DWORD cornerPref = 2 /*DWMWCP_ROUND*/;
     DwmSetWindowAttribute(g_popup, 33 /*DWMWA_WINDOW_CORNER_PREFERENCE*/, &cornerPref, sizeof(cornerPref));
 
-    int curVal = controls::GetValue(st->kind);
-    st->label = CreateWindowExW(0, L"STATIC", SliderLabelText(st->kind, curVal).c_str(),
+    int curVal = controls::GetValue(st->kind, st->monIdx);
+    st->label = CreateWindowExW(0, L"STATIC", SliderLabelText(st->kind, st->monIdx, curVal).c_str(),
                                 WS_CHILD | WS_VISIBLE | SS_CENTER,
                                 s(12), s(12), W - s(24), s(20), g_popup, nullptr, g_inst, nullptr);
     SendMessageW(st->label, WM_SETFONT, reinterpret_cast<WPARAM>(st->font), TRUE);
@@ -295,6 +310,8 @@ void ShowMenu() {
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     }
 
+    AppendMenuW(m, MF_STRING | (controls::IsPerMonitorBrightness() ? MF_CHECKED : 0), ID_PER_MONITOR_BRIGHTNESS,
+                ar ? L"سطوع منفصل لكل شاشة" : L"Separate Brightness per monitor");
     AppendMenuW(m, MF_STRING, ID_RESET_WARMTH, ar ? L"إعادة ضبط صفار الشاشة (0%)" : L"Reset Eye Warmth (0%)");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
 
@@ -326,7 +343,11 @@ void ShowMenu() {
             break;
         case ID_CHECK_UPDATES:
             updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                                kSettingsKey, 1, 1, 0, 3, true);
+                                kSettingsKey, 1, 2, 0, 3, true);
+            break;
+        case ID_PER_MONITOR_BRIGHTNESS:
+            controls::SetPerMonitorBrightness(!controls::IsPerMonitorBrightness());
+            widget::Refresh();
             break;
         case ID_RESET_WARMTH:
             controls::SetValue(ControlKind::Warmth, 0);
@@ -395,7 +416,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == TIMER_REPOSITION) EnsureWidget();
             else if (wp == TIMER_UPDATE_CHECK) {
                 updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                                    kSettingsKey, 1, 1, 0, 3, false);
+                                    kSettingsKey, 1, 2, 0, 3, false);
             }
             return 0;
         case WM_DISPLAYCHANGE:
@@ -487,7 +508,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     SetTimer(g_hwnd, TIMER_REPOSITION, 1000, nullptr);
     SetTimer(g_hwnd, TIMER_UPDATE_CHECK, 24 * 60 * 60 * 1000, nullptr);
     updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                        kSettingsKey, 1, 1, 0, 3, false);
+                        kSettingsKey, 1, 2, 0, 3, false);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {

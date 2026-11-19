@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <vector>
 
 namespace {
@@ -15,9 +16,20 @@ namespace {
 const wchar_t* kSettingsKey = L"Software\\TaskbarQuickControls";
 const wchar_t* kDimClass = L"QuickControlsDimOverlay";
 
-int g_values[3] = { 50, 80, 0 };  // Volume, Brightness (-90..100), Warmth
+struct MonitorEntry {
+    HMONITOR hMon = nullptr;
+    RECT rc{};
+    bool isPrimary = false;
+    std::wstring deviceName;
+    int brightness = 80;
+    HWND dimWnd = nullptr;
+};
+
+int g_values[3] = { 50, 80, 0 };  // Unified Volume, Brightness (-90..100), Warmth
 bool g_muted = false;
-HWND g_dimWnd = nullptr;
+bool g_perMonitor = false;
+std::vector<MonitorEntry> g_monitors;
+HWND g_unifiedDimWnd = nullptr;
 
 bool ReadRegDword(const wchar_t* name, int& out) {
     DWORD v = 0, sz = sizeof(v);
@@ -40,6 +52,12 @@ const wchar_t* RegName(ControlKind kind) {
         case ControlKind::Warmth:     return L"SavedWarmth";
         default:                      return L"";
     }
+}
+
+std::wstring MonitorBrightnessRegName(int idx) {
+    wchar_t buf[32]{};
+    swprintf_s(buf, L"SavedBrightness_%d", idx);
+    return buf;
 }
 
 // ---- Volume (Core Audio) ----------------------------------------------------------------------
@@ -83,48 +101,43 @@ bool WriteSystemVolume(int pct) {
     return ok;
 }
 
-// ---- Brightness (DDC/CI + WMI fallback) -------------------------------------------------------
+// ---- Brightness (DDC/CI per-HMONITOR + WMI fallback) ------------------------------------------
 
-struct DdcReadCtx {
-    bool found = false;
-    int pct = 80;
-};
-
-BOOL CALLBACK EnumDdcReadProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
-    auto* ctx = reinterpret_cast<DdcReadCtx*>(lp);
+bool ReadDdcMonitorBrightness(HMONITOR hMon, int& outPct) {
     DWORD count = 0;
-    if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hMon, &count) || count == 0) return TRUE;
+    if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hMon, &count) || count == 0) return false;
     std::vector<PHYSICAL_MONITOR> mons(count);
+    bool ok = false;
     if (GetPhysicalMonitorsFromHMONITOR(hMon, count, mons.data())) {
         for (DWORD i = 0; i < count; i++) {
             DWORD minB = 0, curB = 0, maxB = 0;
             if (GetMonitorBrightness(mons[i].hPhysicalMonitor, &minB, &curB, &maxB) && maxB > minB) {
-                ctx->pct = std::clamp(static_cast<int>(std::llround(100.0 * (curB - minB) / (maxB - minB))), 0, 100);
-                ctx->found = true;
+                outPct = std::clamp(static_cast<int>(std::llround(100.0 * (curB - minB) / (maxB - minB))), 0, 100);
+                ok = true;
                 break;
             }
         }
         DestroyPhysicalMonitors(count, mons.data());
     }
-    return !ctx->found;
+    return ok;
 }
 
-BOOL CALLBACK EnumDdcWriteProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
-    auto* ctx = reinterpret_cast<DdcReadCtx*>(lp);
+bool WriteDdcMonitorBrightness(HMONITOR hMon, int pct) {
     DWORD count = 0;
-    if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hMon, &count) || count == 0) return TRUE;
+    if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hMon, &count) || count == 0) return false;
     std::vector<PHYSICAL_MONITOR> mons(count);
+    bool ok = false;
     if (GetPhysicalMonitorsFromHMONITOR(hMon, count, mons.data())) {
         for (DWORD i = 0; i < count; i++) {
             DWORD minB = 0, curB = 0, maxB = 0;
             if (GetMonitorBrightness(mons[i].hPhysicalMonitor, &minB, &curB, &maxB) && maxB > minB) {
-                DWORD target = minB + static_cast<DWORD>(std::llround((maxB - minB) * (ctx->pct / 100.0)));
-                if (SetMonitorBrightness(mons[i].hPhysicalMonitor, target)) ctx->found = true;
+                DWORD target = minB + static_cast<DWORD>(std::llround((maxB - minB) * (pct / 100.0)));
+                if (SetMonitorBrightness(mons[i].hPhysicalMonitor, target)) ok = true;
             }
         }
         DestroyPhysicalMonitors(count, mons.data());
     }
-    return TRUE;
+    return ok;
 }
 
 IWbemServices* ConnectWmi() {
@@ -228,22 +241,6 @@ bool WriteWmiBrightness(int pct) {
     return ok;
 }
 
-bool ReadSystemBrightness(int& outPct) {
-    if (ReadWmiBrightness(outPct)) return true;
-    DdcReadCtx ctx{};
-    EnumDisplayMonitors(nullptr, nullptr, EnumDdcReadProc, reinterpret_cast<LPARAM>(&ctx));
-    if (ctx.found) { outPct = ctx.pct; return true; }
-    return false;
-}
-
-bool WriteSystemBrightness(int pct) {
-    pct = std::clamp(pct, 0, 100);
-    if (WriteWmiBrightness(pct)) return true;
-    DdcReadCtx ctx{ false, pct };
-    EnumDisplayMonitors(nullptr, nullptr, EnumDdcWriteProc, reinterpret_cast<LPARAM>(&ctx));
-    return ctx.found;
-}
-
 // ---- Warmth / Eye Protection (Gamma Ramp) -----------------------------------------------------
 
 struct GammaCtx {
@@ -280,24 +277,14 @@ void ApplyWarmthGamma(int pct) {
     EnumDisplayMonitors(nullptr, nullptr, EnumGammaProc, reinterpret_cast<LPARAM>(&ctx));
 }
 
-// ---- Multi-Monitor Dimming Overlay (for negative brightness -90..-1) --------------------------
+// ---- Dimming Overlay (per-monitor or unified) -------------------------------------------------
 
 LRESULT CALLBACK DimOverlayProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-void ApplyDimOverlay(int brightnessPct) {
-    if (brightnessPct >= 0) {
-        if (g_dimWnd && IsWindow(g_dimWnd)) {
-            ShowWindow(g_dimWnd, SW_HIDE);
-        }
-        return;
-    }
-
-    int dimPct = std::clamp(-brightnessPct, 1, 90);
-    BYTE alpha = static_cast<BYTE>(MulDiv(dimPct, 255, 100));
-
+void EnsureDimClass() {
     static bool reg = false;
     if (!reg) {
         WNDCLASSEXW wc{ sizeof(wc) };
@@ -307,25 +294,128 @@ void ApplyDimOverlay(int brightnessPct) {
         wc.lpszClassName = kDimClass;
         reg = RegisterClassExW(&wc) != 0;
     }
+}
 
-    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+void ApplyOverlayToRect(HWND& wnd, const RECT& rc, int brightnessPct) {
+    if (brightnessPct >= 0) {
+        if (wnd && IsWindow(wnd)) ShowWindow(wnd, SW_HIDE);
+        return;
+    }
+    int dimPct = std::clamp(-brightnessPct, 1, 90);
+    BYTE alpha = static_cast<BYTE>(MulDiv(dimPct, 255, 100));
+    EnsureDimClass();
 
-    if (!g_dimWnd || !IsWindow(g_dimWnd)) {
-        g_dimWnd = CreateWindowExW(
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+
+    if (!wnd || !IsWindow(wnd)) {
+        wnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             kDimClass, L"", WS_POPUP,
-            vx, vy, vw, vh, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+            rc.left, rc.top, w, h, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     } else {
-        SetWindowPos(g_dimWnd, HWND_TOPMOST, vx, vy, vw, vh, SWP_NOACTIVATE);
+        SetWindowPos(wnd, HWND_TOPMOST, rc.left, rc.top, w, h, SWP_NOACTIVATE);
     }
 
-    if (g_dimWnd) {
-        SetLayeredWindowAttributes(g_dimWnd, 0, alpha, LWA_ALPHA);
-        ShowWindow(g_dimWnd, SW_SHOWNA);
+    if (wnd) {
+        SetLayeredWindowAttributes(wnd, 0, alpha, LWA_ALPHA);
+        ShowWindow(wnd, SW_SHOWNA);
     }
+}
+
+void HideAllDimOverlays() {
+    if (g_unifiedDimWnd && IsWindow(g_unifiedDimWnd)) ShowWindow(g_unifiedDimWnd, SW_HIDE);
+    for (auto& m : g_monitors) {
+        if (m.dimWnd && IsWindow(m.dimWnd)) ShowWindow(m.dimWnd, SW_HIDE);
+    }
+}
+
+// ---- Monitor Enumeration ----------------------------------------------------------------------
+
+BOOL CALLBACK EnumMonitorsProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
+    auto* out = reinterpret_cast<std::vector<MonitorEntry>*>(lp);
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(hMon, &mi)) {
+        MonitorEntry e;
+        e.hMon = hMon;
+        e.rc = mi.rcMonitor;
+        e.isPrimary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+        e.deviceName = mi.szDevice;
+        out->push_back(std::move(e));
+    }
+    return TRUE;
+}
+
+void RefreshMonitors() {
+    std::vector<MonitorEntry> next;
+    EnumDisplayMonitors(nullptr, nullptr, EnumMonitorsProc, reinterpret_cast<LPARAM>(&next));
+    std::sort(next.begin(), next.end(), [](const MonitorEntry& a, const MonitorEntry& b) {
+        if (a.isPrimary != b.isPrimary) return a.isPrimary > b.isPrimary;
+        if (a.rc.left != b.rc.left) return a.rc.left < b.rc.left;
+        return a.rc.top < b.rc.top;
+    });
+
+    for (size_t i = 0; i < next.size(); i++) {
+        // Preserve existing dimWnd & brightness if same deviceName, else load from Registry.
+        bool matched = false;
+        for (auto& old : g_monitors) {
+            if (old.deviceName == next[i].deviceName) {
+                next[i].dimWnd = old.dimWnd;
+                next[i].brightness = old.brightness;
+                old.dimWnd = nullptr;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            int saved = g_values[1];
+            if (ReadRegDword(MonitorBrightnessRegName(static_cast<int>(i)).c_str(), saved)) {
+                next[i].brightness = std::clamp(saved, -90, 100);
+            } else {
+                int hw = 80;
+                if (ReadDdcMonitorBrightness(next[i].hMon, hw)) next[i].brightness = hw;
+                else if (next[i].isPrimary && ReadWmiBrightness(hw)) next[i].brightness = hw;
+                else next[i].brightness = g_values[1];
+            }
+        }
+    }
+
+    for (auto& old : g_monitors) {
+        if (old.dimWnd && IsWindow(old.dimWnd)) DestroyWindow(old.dimWnd);
+    }
+    g_monitors = std::move(next);
+}
+
+void ApplyMonitorHardwareAndOverlay(MonitorEntry& m, int pct) {
+    int hw = std::max(0, pct);
+    bool wroteDdc = WriteDdcMonitorBrightness(m.hMon, hw);
+    if (!wroteDdc && m.isPrimary) {
+        WriteWmiBrightness(hw);
+    }
+    ApplyOverlayToRect(m.dimWnd, m.rc, pct);
+}
+
+void ApplyUnifiedBrightness(int pct) {
+    int hw = std::max(0, pct);
+    if (!WriteWmiBrightness(hw)) {
+        for (auto& m : g_monitors) WriteDdcMonitorBrightness(m.hMon, hw);
+    } else {
+        for (auto& m : g_monitors) {
+            if (!m.isPrimary) WriteDdcMonitorBrightness(m.hMon, hw);
+        }
+    }
+    for (auto& m : g_monitors) {
+        if (m.dimWnd && IsWindow(m.dimWnd)) ShowWindow(m.dimWnd, SW_HIDE);
+    }
+    RECT virt{
+        GetSystemMetrics(SM_XVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN)
+    };
+    ApplyOverlayToRect(g_unifiedDimWnd, virt, pct);
 }
 
 }  // namespace
@@ -344,7 +434,31 @@ void SaveLanguage(AppLang lang) {
     WriteRegDword(L"Language", static_cast<int>(lang));
 }
 
+bool IsPerMonitorBrightness() { return g_perMonitor; }
+
+void SetPerMonitorBrightness(bool on) {
+    g_perMonitor = on;
+    WriteRegDword(L"PerMonitorBrightness", on ? 1 : 0);
+    RefreshMonitors();
+    HideAllDimOverlays();
+    ReapplyDisplaySettings();
+}
+
+int MonitorCount() {
+    return g_monitors.empty() ? 1 : static_cast<int>(g_monitors.size());
+}
+
+std::wstring MonitorLabel(int monIdx, AppLang lang) {
+    bool ar = (lang == AppLang::Arabic);
+    wchar_t buf[64]{};
+    swprintf_s(buf, ar ? L"الشاشة %d" : L"Display %d", monIdx + 1);
+    return buf;
+}
+
 void Init() {
+    int pm = 0;
+    if (ReadRegDword(L"PerMonitorBrightness", pm)) g_perMonitor = (pm != 0);
+
     int v = 0;
     if (ReadRegDword(RegName(ControlKind::Volume), v)) {
         g_values[0] = std::clamp(v, 0, 100);
@@ -356,11 +470,17 @@ void Init() {
 
     if (ReadRegDword(RegName(ControlKind::Brightness), v)) {
         g_values[1] = std::clamp(v, -90, 100);
-        WriteSystemBrightness(std::max(0, g_values[1]));
-        ApplyDimOverlay(g_values[1]);
-    } else if (ReadSystemBrightness(v)) {
-        g_values[1] = v;
-        WriteRegDword(RegName(ControlKind::Brightness), v);
+    } else {
+        int hw = 80;
+        if (ReadWmiBrightness(hw)) g_values[1] = hw;
+        WriteRegDword(RegName(ControlKind::Brightness), g_values[1]);
+    }
+
+    RefreshMonitors();
+    if (g_perMonitor) {
+        for (auto& m : g_monitors) ApplyMonitorHardwareAndOverlay(m, m.brightness);
+    } else {
+        ApplyUnifiedBrightness(g_values[1]);
     }
 
     if (ReadRegDword(RegName(ControlKind::Warmth), v)) {
@@ -373,15 +493,23 @@ void Init() {
 }
 
 void Shutdown() {
-    // Restore neutral screen colors and remove dimming overlay on explicit exit.
-    if (g_dimWnd && IsWindow(g_dimWnd)) {
-        DestroyWindow(g_dimWnd);
-        g_dimWnd = nullptr;
+    if (g_unifiedDimWnd && IsWindow(g_unifiedDimWnd)) {
+        DestroyWindow(g_unifiedDimWnd);
+        g_unifiedDimWnd = nullptr;
+    }
+    for (auto& m : g_monitors) {
+        if (m.dimWnd && IsWindow(m.dimWnd)) {
+            DestroyWindow(m.dimWnd);
+            m.dimWnd = nullptr;
+        }
     }
     ApplyWarmthGamma(0);
 }
 
-int GetValue(ControlKind kind) {
+int GetValue(ControlKind kind, int monIdx) {
+    if (kind == ControlKind::Brightness && g_perMonitor && monIdx >= 0 && monIdx < static_cast<int>(g_monitors.size())) {
+        return g_monitors[monIdx].brightness;
+    }
     int idx = static_cast<int>(kind);
     if (kind == ControlKind::Volume) {
         int sysV = g_values[0];
@@ -399,10 +527,18 @@ int GetValue(ControlKind kind) {
 
 bool IsMuted() { return g_muted; }
 
-void SetValue(ControlKind kind, int pct) {
-    int idx = static_cast<int>(kind);
+void SetValue(ControlKind kind, int pct, int monIdx) {
     int minVal = (kind == ControlKind::Brightness) ? -90 : 0;
     pct = std::clamp(pct, minVal, 100);
+
+    if (kind == ControlKind::Brightness && g_perMonitor && monIdx >= 0 && monIdx < static_cast<int>(g_monitors.size())) {
+        g_monitors[monIdx].brightness = pct;
+        WriteRegDword(MonitorBrightnessRegName(monIdx).c_str(), pct);
+        ApplyMonitorHardwareAndOverlay(g_monitors[monIdx], pct);
+        return;
+    }
+
+    int idx = static_cast<int>(kind);
     g_values[idx] = pct;
     WriteRegDword(RegName(kind), pct);
 
@@ -411,8 +547,7 @@ void SetValue(ControlKind kind, int pct) {
             WriteSystemVolume(pct);
             break;
         case ControlKind::Brightness:
-            WriteSystemBrightness(std::max(0, pct));
-            ApplyDimOverlay(pct);
+            ApplyUnifiedBrightness(pct);
             break;
         case ControlKind::Warmth:
             ApplyWarmthGamma(pct);
@@ -422,14 +557,20 @@ void SetValue(ControlKind kind, int pct) {
     }
 }
 
-void Adjust(ControlKind kind, int delta) {
-    int cur = GetValue(kind);
-    SetValue(kind, cur + delta);
+void Adjust(ControlKind kind, int delta, int monIdx) {
+    int cur = GetValue(kind, monIdx);
+    SetValue(kind, cur + delta, monIdx);
 }
 
 void ReapplyDisplaySettings() {
+    RefreshMonitors();
     ApplyWarmthGamma(g_values[static_cast<int>(ControlKind::Warmth)]);
-    ApplyDimOverlay(g_values[static_cast<int>(ControlKind::Brightness)]);
+    if (g_perMonitor) {
+        if (g_unifiedDimWnd && IsWindow(g_unifiedDimWnd)) ShowWindow(g_unifiedDimWnd, SW_HIDE);
+        for (auto& m : g_monitors) ApplyMonitorHardwareAndOverlay(m, m.brightness);
+    } else {
+        ApplyUnifiedBrightness(g_values[1]);
+    }
 }
 
 }  // namespace controls

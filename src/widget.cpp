@@ -20,7 +20,7 @@ struct BarInstance {
     bool isPrimary = false;
     int hoverIdx = -1;
     int wheelAccum = 0;
-    RECT slotRects[3]{};
+    std::vector<RECT> slotRects;
     std::wstring tipText;
     int lastW = -1;
     int lastDpi = 0;
@@ -227,6 +227,24 @@ struct Canvas {
     }
 };
 
+int SlotCount() {
+    return controls::IsPerMonitorBrightness() ? (2 + controls::MonitorCount()) : 3;
+}
+
+void SlotToControl(int slotIdx, ControlKind& outKind, int& outMonIdx) {
+    int total = SlotCount();
+    if (slotIdx <= 0) {
+        outKind = ControlKind::Volume;
+        outMonIdx = -1;
+    } else if (slotIdx >= total - 1) {
+        outKind = ControlKind::Warmth;
+        outMonIdx = -1;
+    } else {
+        outKind = ControlKind::Brightness;
+        outMonIdx = controls::IsPerMonitorBrightness() ? (slotIdx - 1) : -1;
+    }
+}
+
 wchar_t IconForKind(ControlKind kind) {
     switch (kind) {
         case ControlKind::Volume:
@@ -242,32 +260,53 @@ wchar_t IconForKind(ControlKind kind) {
 
 std::wstring BuildTooltipForIndex(int idx) {
     bool ar = (g_lang == AppLang::Arabic);
-    if (idx < 0 || idx >= 3) {
+    int total = SlotCount();
+    if (idx < 0 || idx >= total) {
+        std::wstring out;
         wchar_t buf[128]{};
-        if (ar) {
-            swprintf_s(buf, L"الصوت: \u200E%d%%\nالسطوع: \u200E%d%%\nصفار الشاشة: \u200E%d%%",
-                       controls::GetValue(ControlKind::Volume),
-                       controls::GetValue(ControlKind::Brightness),
-                       controls::GetValue(ControlKind::Warmth));
+        swprintf_s(buf, ar ? L"الصوت: \u200E%d%%" : L"Volume: %d%%", controls::GetValue(ControlKind::Volume));
+        out = buf;
+        if (controls::IsPerMonitorBrightness()) {
+            int mc = controls::MonitorCount();
+            for (int m = 0; m < mc; m++) {
+                std::wstring lbl = controls::MonitorLabel(m, g_lang);
+                swprintf_s(buf, ar ? L"\nالسطوع (%s): \u200E%d%%" : L"\nBrightness (%s): %d%%",
+                           lbl.c_str(), controls::GetValue(ControlKind::Brightness, m));
+                out += buf;
+            }
         } else {
-            swprintf_s(buf, L"Volume: %d%%\nBrightness: %d%%\nEye Warmth: %d%%",
-                       controls::GetValue(ControlKind::Volume),
-                       controls::GetValue(ControlKind::Brightness),
-                       controls::GetValue(ControlKind::Warmth));
+            swprintf_s(buf, ar ? L"\nالسطوع: \u200E%d%%" : L"\nBrightness: %d%%",
+                       controls::GetValue(ControlKind::Brightness));
+            out += buf;
         }
-        std::wstring out = buf;
+        swprintf_s(buf, ar ? L"\nصفار الشاشة: \u200E%d%%" : L"\nEye Warmth: %d%%",
+                   controls::GetValue(ControlKind::Warmth));
+        out += buf;
         if (g_updateDot && !g_updateVer.empty()) {
             out += ar ? (L"\nيتوفر تحديث: " + g_updateVer) : (L"\nUpdate available: " + g_updateVer);
         }
         return out;
     }
-    ControlKind k = static_cast<ControlKind>(idx);
-    int val = controls::GetValue(k);
-    const wchar_t* name = ar
-        ? ((idx == 0) ? L"الصوت" : (idx == 1) ? L"السطوع" : L"صفار الشاشة")
-        : ((idx == 0) ? L"Volume" : (idx == 1) ? L"Brightness" : L"Eye Warmth");
-    wchar_t buf[64]{};
-    swprintf_s(buf, ar ? L"%s: \u200E%d%%" : L"%s: %d%%", name, val);
+
+    ControlKind k = ControlKind::Volume;
+    int monIdx = -1;
+    SlotToControl(idx, k, monIdx);
+    int val = controls::GetValue(k, monIdx);
+
+    std::wstring label;
+    if (k == ControlKind::Volume) {
+        label = ar ? L"الصوت" : L"Volume";
+    } else if (k == ControlKind::Warmth) {
+        label = ar ? L"صفار الشاشة" : L"Eye Warmth";
+    } else {
+        label = ar ? L"السطوع" : L"Brightness";
+        if (controls::IsPerMonitorBrightness() && monIdx >= 0) {
+            label += L" (" + controls::MonitorLabel(monIdx, g_lang) + L")";
+        }
+    }
+
+    wchar_t buf[96]{};
+    swprintf_s(buf, ar ? L"%s: \u200E%d%%" : L"%s: %d%%", label.c_str(), val);
     std::wstring out = buf;
     if (g_updateDot && !g_updateVer.empty()) {
         out += ar ? (L"\nيتوفر تحديث: " + g_updateVer) : (L"\nUpdate available: " + g_updateVer);
@@ -294,7 +333,7 @@ int HitTestScreen(const BarInstance& b) {
     RECT w{};
     if (!GetCursorPos(&pt) || !GetWindowRect(b.wnd, &w)) return -1;
     int x = pt.x - w.left;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < static_cast<int>(b.slotRects.size()); i++) {
         if (x >= b.slotRects[i].left && x < b.slotRects[i].right) return i;
     }
     return -1;
@@ -308,10 +347,11 @@ void PaintBar(BarInstance& b) {
     if (H <= 0) return;
 
     auto px = [&](int v) { return Px(b.taskbar, v); };
+    const int count = SlotCount();
     const int padX = px(4);
     const int slotW = px(28);
     const int gap = px(2);
-    const int W = padX * 2 + slotW * 3 + gap * 2;
+    const int W = padX * 2 + slotW * count + gap * std::max(0, count - 1);
 
     Canvas cv(W, H);
     for (auto& p : cv.px) p = 0x01000000;
@@ -322,10 +362,13 @@ void PaintBar(BarInstance& b) {
     }
 
     HFONT icons = MakeFont(px(16), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT badgeFont = MakeFont(px(10), FW_BOLD, L"Segoe UI", L"Segoe UI");
     Rgb fg = g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
     Rgb warmColor = g_light ? Rgb{ 194, 102, 0 } : Rgb{ 255, 196, 86 };
+    Rgb badgeCol = g_light ? Rgb{ 0, 103, 192 } : Rgb{ 96, 205, 255 };
 
-    for (int i = 0; i < 3; i++) {
+    b.slotRects.resize(count);
+    for (int i = 0; i < count; i++) {
         int sx0 = padX + i * (slotW + gap);
         int sx1 = sx0 + slotW;
         b.slotRects[i] = { sx0, 0, sx1, H };
@@ -335,14 +378,24 @@ void PaintBar(BarInstance& b) {
                              g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 }, g_light ? 20 : 26);
         }
 
-        ControlKind k = static_cast<ControlKind>(i);
+        ControlKind k = ControlKind::Volume;
+        int monIdx = -1;
+        SlotToControl(i, k, monIdx);
+
         Mask m = RenderMask(std::wstring(1, IconForKind(k)), icons, g_light);
         Rgb c = (k == ControlKind::Warmth && controls::GetValue(ControlKind::Warmth) > 0) ? warmColor : fg;
-        int alpha = (k == ControlKind::Brightness && controls::GetValue(ControlKind::Brightness) < 0) ? 165 : 255;
+        int alpha = (k == ControlKind::Brightness && controls::GetValue(ControlKind::Brightness, monIdx) < 0) ? 165 : 255;
         cv.Draw(m, sx0 + (slotW - m.w) / 2, (H - m.h) / 2, c, alpha);
+
+        if (k == ControlKind::Brightness && controls::IsPerMonitorBrightness() && monIdx >= 0 && controls::MonitorCount() > 1) {
+            std::wstring num = std::to_wstring(monIdx + 1);
+            Mask bm = RenderMask(num, badgeFont, g_light);
+            cv.Draw(bm, sx1 - bm.w - px(2), H - bm.h - px(6), badgeCol, 245);
+        }
     }
 
     DeleteObject(icons);
+    DeleteObject(badgeFont);
 
     if (g_updateDot) {
         int r = std::max(2, px(3));
@@ -509,12 +562,15 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (b) {
                 int idx = HitTestScreen(*b);
                 if (idx < 0) idx = b->hoverIdx;
-                if (idx >= 0 && idx < 3) {
+                if (idx >= 0 && idx < SlotCount()) {
                     b->wheelAccum += GET_WHEEL_DELTA_WPARAM(wp);
                     int steps = b->wheelAccum / WHEEL_DELTA;
                     if (steps != 0) {
                         b->wheelAccum -= steps * WHEEL_DELTA;
-                        controls::Adjust(static_cast<ControlKind>(idx), steps * 5);
+                        ControlKind k = ControlKind::Volume;
+                        int monIdx = -1;
+                        SlotToControl(idx, k, monIdx);
+                        controls::Adjust(k, steps * 5, monIdx);
                         b->hoverIdx = idx;
                         UpdateTooltip(*b, idx);
                         for (auto& bar : g_bars) PaintBar(*bar);
@@ -526,7 +582,7 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (b) {
                 if (b->tip) SendMessageW(b->tip, TTM_POP, 0, 0);
                 int idx = HitTestScreen(*b);
-                if (idx >= 0 && idx < 3) {
+                if (idx >= 0 && idx < SlotCount()) {
                     g_lastClickedWnd = h;
                     PostMessageW(g_notify, g_clickMsg, 0, static_cast<LPARAM>(idx));
                 }
@@ -666,8 +722,13 @@ void Refresh() {
         if (b->wnd && IsWindow(b->wnd)) {
             UpdateTooltip(*b, b->hoverIdx);
             PaintBar(*b);
+            RepositionBar(*b);
         }
     }
+}
+
+void ResolveSlot(int slotIdx, ControlKind& outKind, int& outMonIdx) {
+    SlotToControl(slotIdx, outKind, outMonIdx);
 }
 
 void SetLanguage(AppLang lang) {
@@ -677,20 +738,20 @@ void SetLanguage(AppLang lang) {
 
 HWND LastClickedWnd() { return g_lastClickedWnd; }
 
-RECT SlotScreenRect(HWND widgetWnd, int idx) {
+RECT SlotScreenRect(HWND widgetWnd, int slotIdx) {
     RECT r{};
-    if (idx < 0 || idx >= 3) return r;
     BarInstance* target = nullptr;
     for (const auto& b : g_bars) {
         if (b->wnd == widgetWnd) { target = b.get(); break; }
     }
     if (!target && !g_bars.empty()) target = g_bars[0].get();
     if (!target || !target->wnd || !IsWindow(target->wnd)) return r;
+    if (slotIdx < 0 || slotIdx >= static_cast<int>(target->slotRects.size())) return r;
 
     RECT w{};
     GetWindowRect(target->wnd, &w);
-    r.left = w.left + target->slotRects[idx].left;
-    r.right = w.left + target->slotRects[idx].right;
+    r.left = w.left + target->slotRects[slotIdx].left;
+    r.right = w.left + target->slotRects[slotIdx].right;
     r.top = w.top;
     r.bottom = w.bottom;
     return r;
