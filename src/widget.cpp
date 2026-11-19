@@ -19,6 +19,7 @@ struct BarInstance {
     HWND rebar = nullptr;
     bool isPrimary = false;
     int hoverIdx = -1;
+    int dragIdx = -1;
     int wheelAccum = 0;
     std::vector<RECT> slotRects;
     std::wstring tipText;
@@ -228,21 +229,18 @@ struct Canvas {
 };
 
 int SlotCount() {
-    return controls::IsPerMonitorBrightness() ? (2 + controls::MonitorCount()) : 3;
+    return static_cast<int>(controls::GetSlots().size());
 }
 
 void SlotToControl(int slotIdx, ControlKind& outKind, int& outMonIdx) {
-    int total = SlotCount();
-    if (slotIdx <= 0) {
+    auto slots = controls::GetSlots();
+    if (slotIdx < 0 || slotIdx >= static_cast<int>(slots.size())) {
         outKind = ControlKind::Volume;
         outMonIdx = -1;
-    } else if (slotIdx >= total - 1) {
-        outKind = ControlKind::Warmth;
-        outMonIdx = -1;
-    } else {
-        outKind = ControlKind::Brightness;
-        outMonIdx = controls::IsPerMonitorBrightness() ? (slotIdx - 1) : -1;
+        return;
     }
+    outKind = slots[slotIdx].kind;
+    outMonIdx = slots[slotIdx].monIdx;
 }
 
 wchar_t IconForKind(ControlKind kind) {
@@ -361,12 +359,28 @@ void PaintBar(BarInstance& b) {
                          g_light ? Rgb{ 243, 243, 243 } : Rgb{ 32, 32, 32 }, 240);
     }
 
+    if (controls::IsReorderMode()) {
+        Rgb rc = g_light ? Rgb{ 0, 103, 192 } : Rgb{ 96, 205, 255 };
+        int y0 = px(4), y1 = H - px(4) - 1;
+        for (int x = 1; x < W - 1; x += 4) {
+            cv.Blend(x, y0, rc, 200);
+            cv.Blend(x + 1, y0, rc, 200);
+            cv.Blend(x, y1, rc, 200);
+            cv.Blend(x + 1, y1, rc, 200);
+        }
+        for (int y = y0; y <= y1; y += 4) {
+            cv.Blend(1, y, rc, 200);
+            cv.Blend(W - 2, y, rc, 200);
+        }
+    }
+
     HFONT icons = MakeFont(px(16), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
     HFONT badgeFont = MakeFont(px(10), FW_BOLD, L"Segoe UI", L"Segoe UI");
     Rgb fg = g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
     Rgb warmColor = g_light ? Rgb{ 194, 102, 0 } : Rgb{ 255, 196, 86 };
     Rgb badgeCol = g_light ? Rgb{ 0, 103, 192 } : Rgb{ 96, 205, 255 };
 
+    auto slots = controls::GetSlots();
     b.slotRects.resize(count);
     for (int i = 0; i < count; i++) {
         int sx0 = padX + i * (slotW + gap);
@@ -378,9 +392,8 @@ void PaintBar(BarInstance& b) {
                              g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 }, g_light ? 20 : 26);
         }
 
-        ControlKind k = ControlKind::Volume;
-        int monIdx = -1;
-        SlotToControl(i, k, monIdx);
+        ControlKind k = slots[i].kind;
+        int monIdx = slots[i].monIdx;
 
         Mask m = RenderMask(std::wstring(1, IconForKind(k)), icons, g_light);
         Rgb c = (k == ControlKind::Warmth && controls::GetValue(ControlKind::Warmth) > 0) ? warmColor : fg;
@@ -539,6 +552,16 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_MOUSEMOVE:
             if (b) {
                 int idx = HitTestScreen(*b);
+                if (b->dragIdx >= 0 && controls::IsReorderMode()) {
+                    if (idx >= 0 && idx != b->dragIdx) {
+                        controls::MoveSlot(b->dragIdx, idx);
+                        b->dragIdx = idx;
+                        b->hoverIdx = idx;
+                        UpdateTooltip(*b, idx);
+                        for (auto& bar : g_bars) PaintBar(*bar);
+                    }
+                    return 0;
+                }
                 if (b->hoverIdx != idx) {
                     b->hoverIdx = idx;
                     TRACKMOUSEEVENT t{ sizeof(t), TME_LEAVE, h, 0 };
@@ -578,8 +601,23 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 }
             }
             return 0;
+        case WM_LBUTTONDOWN:
+            if (b && controls::IsReorderMode()) {
+                int idx = HitTestScreen(*b);
+                if (idx >= 0) {
+                    b->dragIdx = idx;
+                    SetCapture(h);
+                }
+                return 0;
+            }
+            break;
         case WM_LBUTTONUP:
             if (b) {
+                if (b->dragIdx >= 0) {
+                    ReleaseCapture();
+                    b->dragIdx = -1;
+                    return 0;
+                }
                 if (b->tip) SendMessageW(b->tip, TTM_POP, 0, 0);
                 int idx = HitTestScreen(*b);
                 if (idx >= 0 && idx < SlotCount()) {

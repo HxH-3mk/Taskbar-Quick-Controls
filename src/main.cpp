@@ -21,6 +21,7 @@ enum MenuId : UINT {
     ID_UPDATE_NOW = 90,
     ID_RESET_WARMTH = 100,
     ID_PER_MONITOR_BRIGHTNESS,
+    ID_REORDER_MODE,
     ID_LANG_EN,
     ID_LANG_AR,
     ID_WIDGET_BACKGROUND,
@@ -312,6 +313,8 @@ void ShowMenu() {
 
     AppendMenuW(m, MF_STRING | (controls::IsPerMonitorBrightness() ? MF_CHECKED : 0), ID_PER_MONITOR_BRIGHTNESS,
                 ar ? L"سطوع منفصل لكل شاشة" : L"Separate Brightness per monitor");
+    AppendMenuW(m, MF_STRING | (controls::IsReorderMode() ? MF_CHECKED : 0), ID_REORDER_MODE,
+                ar ? L"تعديل ترتيب الأيقونات (سحب)" : L"Reorder icons (drag)");
     AppendMenuW(m, MF_STRING, ID_RESET_WARMTH, ar ? L"إعادة ضبط صفار الشاشة (0%)" : L"Reset Eye Warmth (0%)");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
 
@@ -343,10 +346,14 @@ void ShowMenu() {
             break;
         case ID_CHECK_UPDATES:
             updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                                kSettingsKey, 1, 2, 0, 3, true);
+                                kSettingsKey, 1, 3, 0, 3, true);
             break;
         case ID_PER_MONITOR_BRIGHTNESS:
             controls::SetPerMonitorBrightness(!controls::IsPerMonitorBrightness());
+            widget::Refresh();
+            break;
+        case ID_REORDER_MODE:
+            controls::SetReorderMode(!controls::IsReorderMode());
             widget::Refresh();
             break;
         case ID_RESET_WARMTH:
@@ -416,7 +423,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == TIMER_REPOSITION) EnsureWidget();
             else if (wp == TIMER_UPDATE_CHECK) {
                 updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                                    kSettingsKey, 1, 2, 0, 3, false);
+                                    kSettingsKey, 1, 3, 0, 3, false);
             }
             return 0;
         case WM_DISPLAYCHANGE:
@@ -508,7 +515,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     SetTimer(g_hwnd, TIMER_REPOSITION, 1000, nullptr);
     SetTimer(g_hwnd, TIMER_UPDATE_CHECK, 24 * 60 * 60 * 1000, nullptr);
     updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
-                        kSettingsKey, 1, 2, 0, 3, false);
+                        kSettingsKey, 1, 3, 0, 3, false);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {

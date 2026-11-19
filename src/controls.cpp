@@ -28,7 +28,9 @@ struct MonitorEntry {
 int g_values[3] = { 50, 80, 0 };  // Unified Volume, Brightness (-90..100), Warmth
 bool g_muted = false;
 bool g_perMonitor = false;
+bool g_reorderMode = false;
 std::vector<MonitorEntry> g_monitors;
+std::vector<std::wstring> g_savedOrder;
 HWND g_unifiedDimWnd = nullptr;
 
 bool ReadRegDword(const wchar_t* name, int& out) {
@@ -43,6 +45,54 @@ bool ReadRegDword(const wchar_t* name, int& out) {
 void WriteRegDword(const wchar_t* name, int val) {
     DWORD v = static_cast<DWORD>(val);
     RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, name, REG_DWORD, &v, sizeof(v));
+}
+
+std::wstring ReadRegString(const wchar_t* name) {
+    DWORD size = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, name, RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS || size < sizeof(wchar_t))
+        return {};
+    std::wstring out(size / sizeof(wchar_t), L'\0');
+    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, name, RRF_RT_REG_SZ, nullptr, out.data(), &size) != ERROR_SUCCESS)
+        return {};
+    while (!out.empty() && out.back() == L'\0') out.pop_back();
+    return out;
+}
+
+void WriteRegString(const wchar_t* name, const std::wstring& val) {
+    RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, name, REG_SZ, val.c_str(),
+                    static_cast<DWORD>((val.size() + 1) * sizeof(wchar_t)));
+}
+
+std::wstring SlotKey(const SlotDef& s) {
+    if (s.kind == ControlKind::Volume) return L"vol";
+    if (s.kind == ControlKind::Warmth) return L"warm";
+    if (s.monIdx >= 0) return L"bri_" + std::to_wstring(s.monIdx);
+    return L"bri";
+}
+
+void LoadSavedOrder() {
+    g_savedOrder.clear();
+    std::wstring raw = ReadRegString(L"IconOrder");
+    size_t pos = 0;
+    while (pos < raw.size()) {
+        size_t comma = raw.find(L',', pos);
+        if (comma == std::wstring::npos) comma = raw.size();
+        std::wstring tok = raw.substr(pos, comma - pos);
+        if (!tok.empty()) g_savedOrder.push_back(tok);
+        pos = comma + 1;
+    }
+}
+
+void SaveSlotOrder(const std::vector<SlotDef>& slots) {
+    g_savedOrder.clear();
+    std::wstring joined;
+    for (size_t i = 0; i < slots.size(); i++) {
+        std::wstring k = SlotKey(slots[i]);
+        g_savedOrder.push_back(k);
+        if (i > 0) joined.push_back(L',');
+        joined += k;
+    }
+    WriteRegString(L"IconOrder", joined);
 }
 
 const wchar_t* RegName(ControlKind kind) {
@@ -455,7 +505,51 @@ std::wstring MonitorLabel(int monIdx, AppLang lang) {
     return buf;
 }
 
+bool IsReorderMode() { return g_reorderMode; }
+void SetReorderMode(bool on) { g_reorderMode = on; }
+
+std::vector<SlotDef> GetSlots() {
+    std::vector<SlotDef> active;
+    active.push_back({ ControlKind::Volume, -1 });
+    if (g_perMonitor) {
+        int mc = MonitorCount();
+        for (int i = 0; i < mc; i++) active.push_back({ ControlKind::Brightness, i });
+    } else {
+        active.push_back({ ControlKind::Brightness, -1 });
+    }
+    active.push_back({ ControlKind::Warmth, -1 });
+
+    if (g_savedOrder.empty()) return active;
+
+    std::vector<SlotDef> ordered;
+    std::vector<bool> used(active.size(), false);
+    for (const auto& key : g_savedOrder) {
+        for (size_t i = 0; i < active.size(); i++) {
+            if (!used[i] && SlotKey(active[i]) == key) {
+                ordered.push_back(active[i]);
+                used[i] = true;
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; i < active.size(); i++) {
+        if (!used[i]) ordered.push_back(active[i]);
+    }
+    return ordered;
+}
+
+void MoveSlot(int fromIdx, int toIdx) {
+    auto slots = GetSlots();
+    int n = static_cast<int>(slots.size());
+    if (fromIdx < 0 || fromIdx >= n || toIdx < 0 || toIdx >= n || fromIdx == toIdx) return;
+    SlotDef item = slots[fromIdx];
+    slots.erase(slots.begin() + fromIdx);
+    slots.insert(slots.begin() + toIdx, item);
+    SaveSlotOrder(slots);
+}
+
 void Init() {
+    LoadSavedOrder();
     int pm = 0;
     if (ReadRegDword(L"PerMonitorBrightness", pm)) g_perMonitor = (pm != 0);
 
