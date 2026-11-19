@@ -553,6 +553,7 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (b) {
                 int idx = HitTestScreen(*b);
                 if (b->dragIdx >= 0 && controls::IsReorderMode()) {
+                    PostMessageW(g_notify, g_clickMsg, 2, 0);
                     if (idx >= 0 && idx != b->dragIdx) {
                         controls::MoveSlot(b->dragIdx, idx);
                         b->dragIdx = idx;
@@ -603,6 +604,7 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_LBUTTONDOWN:
             if (b && controls::IsReorderMode()) {
+                PostMessageW(g_notify, g_clickMsg, 2, 0);
                 int idx = HitTestScreen(*b);
                 if (idx >= 0) {
                     b->dragIdx = idx;

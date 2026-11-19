@@ -16,6 +16,8 @@ constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
 constexpr UINT WM_UPDATE_RESULT = WM_APP + 4;
 constexpr UINT_PTR TIMER_REPOSITION = 1;
 constexpr UINT_PTR TIMER_UPDATE_CHECK = 2;
+constexpr UINT_PTR TIMER_REORDER_TIMEOUT = 3;
+constexpr UINT REORDER_TIMEOUT_MS = 15000;
 
 enum MenuId : UINT {
     ID_UPDATE_NOW = 90,
@@ -352,10 +354,14 @@ void ShowMenu() {
             controls::SetPerMonitorBrightness(!controls::IsPerMonitorBrightness());
             widget::Refresh();
             break;
-        case ID_REORDER_MODE:
-            controls::SetReorderMode(!controls::IsReorderMode());
+        case ID_REORDER_MODE: {
+            bool next = !controls::IsReorderMode();
+            controls::SetReorderMode(next);
+            if (next) SetTimer(g_hwnd, TIMER_REORDER_TIMEOUT, REORDER_TIMEOUT_MS, nullptr);
+            else KillTimer(g_hwnd, TIMER_REORDER_TIMEOUT);
             widget::Refresh();
             break;
+        }
         case ID_RESET_WARMTH:
             controls::SetValue(ControlKind::Warmth, 0);
             widget::Refresh();
@@ -394,6 +400,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_WIDGET_CLICK:
             if (wp == 1) {
                 ShowMenu();
+            } else if (wp == 2) {
+                if (controls::IsReorderMode()) SetTimer(h, TIMER_REORDER_TIMEOUT, REORDER_TIMEOUT_MS, nullptr);
             } else if (wp == 0) {
                 int idx = static_cast<int>(lp);
                 ShowSliderPopup(idx, widget::SlotScreenRect(widget::LastClickedWnd(), idx));
@@ -421,6 +429,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_TIMER:
             if (wp == TIMER_REPOSITION) EnsureWidget();
+            else if (wp == TIMER_REORDER_TIMEOUT) {
+                KillTimer(h, TIMER_REORDER_TIMEOUT);
+                if (controls::IsReorderMode()) {
+                    controls::SetReorderMode(false);
+                    widget::Refresh();
+                }
+            }
             else if (wp == TIMER_UPDATE_CHECK) {
                 updater::CheckAsync(g_hwnd, WM_UPDATE_RESULT, L"HxH-3mk/Taskbar-Quick-Controls",
                                     kSettingsKey, 1, 3, 0, 3, false);
